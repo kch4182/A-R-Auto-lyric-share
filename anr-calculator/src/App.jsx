@@ -392,7 +392,7 @@ function App() {
             <div className="mb-2 inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1 text-xs font-bold text-gray-600 shadow-sm">
               <ChartPie className="h-3.5 w-3.5 text-blue-600" /> Lyric Share Studio
             </div>
-            <h1 className="text-3xl font-black tracking-normal text-gray-950 sm:text-4xl">지원이 작사 지분율 계산기</h1>
+            <h1 className="text-3xl font-black tracking-normal text-gray-950 sm:text-4xl">작사 지분율 계산기</h1>
           </div>
           <div className="grid grid-cols-2 overflow-hidden rounded-lg border border-gray-200 bg-white text-sm shadow-sm sm:grid-cols-4">
             <Metric label="총 글자" value={`${totalSyllables}자`} />
