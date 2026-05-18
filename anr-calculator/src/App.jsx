@@ -112,7 +112,44 @@ const countEnglishSyllables = (word) => {
   return compoundUnitCount ? Math.min(adjustedSyllables, compoundUnitCount) : adjustedSyllables;
 };
 
-const tokenizeLyrics = (text) => {
+const TEAM_EXCEPTION_STORAGE_KEY = 'lyricShareTeamExceptionDictionary';
+
+const normalizeTeamExceptionWord = (word) =>
+  String(word ?? '')
+    .trim()
+    .replace(/[‘’']/g, '')
+    .replace(/[–—]/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .toLowerCase();
+
+const getTeamExceptionSyllableCount = (word, teamExceptionMap) => {
+  if (!teamExceptionMap) return undefined;
+  const normalizedWord = normalizeTeamExceptionWord(word);
+  return teamExceptionMap.get(normalizedWord);
+};
+
+const loadTeamExceptionWords = () => {
+  if (typeof window === 'undefined') return [];
+
+  try {
+    const storedValue = window.localStorage.getItem(TEAM_EXCEPTION_STORAGE_KEY);
+    if (!storedValue) return [];
+
+    const parsedValue = JSON.parse(storedValue);
+    if (!Array.isArray(parsedValue)) return [];
+
+    return parsedValue
+      .map((entry) => ({
+        word: normalizeTeamExceptionWord(entry.word ?? ''),
+        syllables: Math.max(parseInt(entry.syllables, 10) || 1, 1),
+      }))
+      .filter((entry) => entry.word);
+  } catch {
+    return [];
+  }
+};
+
+const tokenizeLyrics = (text, teamExceptionMap) => {
   const regex = /([a-zA-Z]+(?:[''-][a-zA-Z]+)*)|([\uAC00-\uD7A3])|(\s+)|([^a-zA-Z\uAC00-\uD7A3\s])/g;
   const tokens = [];
   let match;
@@ -120,7 +157,8 @@ const tokenizeLyrics = (text) => {
 
   while ((match = regex.exec(text)) !== null) {
     if (match[1]) { 
-      tokens.push({ id: idCounter++, type: 'en', text: match[1], count: countEnglishSyllables(match[1]) });
+      const teamExceptionCount = getTeamExceptionSyllableCount(match[1], teamExceptionMap);
+      tokens.push({ id: idCounter++, type: 'en', text: match[1], count: teamExceptionCount ?? countEnglishSyllables(match[1]) });
     } else if (match[2]) { 
       tokens.push({ id: idCounter++, type: 'ko', text: match[2], count: 1 });
     } else if (match[3]) { 
@@ -132,7 +170,7 @@ const tokenizeLyrics = (text) => {
   return tokens;
 };
 
-const analyzeLyrics = (text, includeSpecialChars) => {
+const analyzeLyrics = (text, includeSpecialChars, teamExceptionMap) => {
   let total = 0, korean = 0, english = 0, special = 0, index = 0;
   const chars = Array.from(text);
 
@@ -146,7 +184,7 @@ const analyzeLyrics = (text, includeSpecialChars) => {
         word += chars[index];
         index += 1;
       }
-      const syllableCount = countEnglishSyllables(word);
+      const syllableCount = getTeamExceptionSyllableCount(word, teamExceptionMap) ?? countEnglishSyllables(word);
       english += syllableCount;
       total += syllableCount;
       continue;
@@ -172,11 +210,29 @@ function App() {
   
   const [isAnalyzed, setIsAnalyzed] = useState(false);
   const [tokens, setTokens] = useState([]);
+  const [teamExceptionWords, setTeamExceptionWords] = useState(loadTeamExceptionWords);
+  const [isDictionaryModalOpen, setIsDictionaryModalOpen] = useState(false);
+  const [exceptionWordInput, setExceptionWordInput] = useState('');
+  const [exceptionSyllableInput, setExceptionSyllableInput] = useState('1');
+  const [editingExceptionWord, setEditingExceptionWord] = useState(null);
 
   const [editableLyricStats, setEditableLyricStats] = useState({ english: 0, korean: 0, special: 0 });
   const [writers, setWriters] = useState([]);
   const [nameInput, setNameInput] = useState('');
   const [syllableInput, setSyllableInput] = useState('');
+
+  const teamExceptionMap = useMemo(
+    () => new Map(teamExceptionWords.map((entry) => [entry.word, entry.syllables])),
+    [teamExceptionWords],
+  );
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(TEAM_EXCEPTION_STORAGE_KEY, JSON.stringify(teamExceptionWords));
+    } catch {
+      // localStorage가 막힌 환경에서도 계산기는 계속 동작해야 합니다.
+    }
+  }, [teamExceptionWords]);
 
   const currentStats = useMemo(() => {
     if (isAnalyzed) {
@@ -188,9 +244,9 @@ function App() {
       });
       return { english: en, korean: ko, special: sp };
     } else {
-      return analyzeLyrics(lyricText, includeSpecialChars);
+      return analyzeLyrics(lyricText, includeSpecialChars, teamExceptionMap);
     }
-  }, [lyricText, tokens, isAnalyzed, includeSpecialChars]);
+  }, [lyricText, tokens, isAnalyzed, includeSpecialChars, teamExceptionMap]);
 
   useEffect(() => {
     setEditableLyricStats({
@@ -255,12 +311,65 @@ function App() {
 
   const executeAnalysis = () => {
     if (!lyricText.trim()) return alert('가사를 먼저 입력해주세요.');
-    setTokens(tokenizeLyrics(lyricText));
+    setTokens(tokenizeLyrics(lyricText, teamExceptionMap));
     setIsAnalyzed(true);
   };
 
   const handleTokenChange = (id, newCount) => {
     setTokens(tokens.map(t => t.id === id ? { ...t, count: newCount } : t));
+  };
+
+  const resetTeamExceptionForm = () => {
+    setExceptionWordInput('');
+    setExceptionSyllableInput('1');
+    setEditingExceptionWord(null);
+  };
+
+  const handleAddTeamException = () => {
+    const normalizedWord = normalizeTeamExceptionWord(exceptionWordInput);
+    const syllableCount = parseInt(exceptionSyllableInput, 10);
+
+    if (!normalizedWord) return alert('영단어를 입력해주세요.');
+    if (Number.isNaN(syllableCount) || syllableCount <= 0) return alert('음절 수는 1 이상의 숫자로 입력해주세요.');
+
+    if (editingExceptionWord) {
+      setTeamExceptionWords((curr) => [
+        ...curr.filter((entry) => entry.word !== editingExceptionWord && entry.word !== normalizedWord),
+        { word: normalizedWord, syllables: syllableCount },
+      ].sort((a, b) => a.word.localeCompare(b.word)));
+      setTokens((curr) => curr.map((token) => (
+        token.type === 'en'
+          ? {
+              ...token,
+              count: normalizeTeamExceptionWord(token.text) === normalizedWord
+                ? syllableCount
+                : normalizeTeamExceptionWord(token.text) === editingExceptionWord
+                  ? countEnglishSyllables(token.text)
+                  : token.count,
+            }
+          : token
+      )));
+      resetTeamExceptionForm();
+      return;
+    }
+
+    setTeamExceptionWords((curr) => [
+      ...curr.filter((entry) => entry.word !== normalizedWord),
+      { word: normalizedWord, syllables: syllableCount },
+    ].sort((a, b) => a.word.localeCompare(b.word)));
+    resetTeamExceptionForm();
+  };
+
+  const handleEditTeamException = (entry) => {
+    setEditingExceptionWord(entry.word);
+    setExceptionWordInput(entry.word);
+    setExceptionSyllableInput(String(entry.syllables));
+  };
+
+  const handleRemoveTeamException = (word) => {
+    if (!window.confirm('정말 삭제하시겠습니까?')) return;
+    setTeamExceptionWords((curr) => curr.filter((entry) => entry.word !== word));
+    if (editingExceptionWord === word) resetTeamExceptionForm();
   };
 
   const handleDownloadCSV = () => { 
@@ -306,12 +415,15 @@ function App() {
                   <p className="text-sm font-medium text-gray-500">영어 음절, 한글 글자 기준</p>
                 </div>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap justify-end gap-2">
                 {isAnalyzed && (
                   <button onClick={() => setIsAnalyzed(false)} className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-bold text-blue-700 transition hover:bg-blue-100">
                     <Edit2 className="h-4 w-4" /> 가사 수정
                   </button>
                 )}
+                <button type="button" onClick={() => setIsDictionaryModalOpen(true)} className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-bold text-gray-600 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700">
+                  영단어 음절 설정
+                </button>
                 <button type="button" onClick={clearLyrics} className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-bold text-gray-600 transition hover:border-gray-300 hover:bg-gray-50">
                   초기화
                 </button>
@@ -332,14 +444,14 @@ function App() {
                     onClick={executeAnalysis}
                     className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 py-3.5 text-base font-black text-white shadow-md transition hover:bg-blue-700"
                   >
-                    <Wand2 className="h-5 w-5" /> 음절 분석하기
+                    <Wand2 className="h-5 w-5" /> 음절 분석
                   </button>
                 </div>
               ) : (
                 <div className="h-[540px] w-full rounded-lg border border-blue-200 bg-blue-50/30 px-5 py-5 overflow-y-auto relative">
                   <div className="mb-2 pb-3 border-b border-blue-100 flex items-center gap-2 sticky top-0 bg-blue-50/90 backdrop-blur-sm z-10">
                     <p className="text-xs font-bold text-blue-600">
-                      ✓ 분석 완료! 파란색 숫자를 클릭해 음절을 수정할 수 있습니다.
+                      ✓ 분석 완료! 영단어 상단 파란색 숫자를 클릭해 음절을 수정할 수 있습니다.
                     </p>
                   </div>
                   
@@ -500,9 +612,155 @@ function App() {
 
         </div>
       </div>
+      {isDictionaryModalOpen && (
+        <TeamDictionaryModal
+          exceptionWords={teamExceptionWords}
+          wordInput={exceptionWordInput}
+          syllableInput={exceptionSyllableInput}
+          onWordInputChange={setExceptionWordInput}
+          onSyllableInputChange={setExceptionSyllableInput}
+          onAdd={handleAddTeamException}
+          onEdit={handleEditTeamException}
+          onRemove={handleRemoveTeamException}
+          onCancelEdit={resetTeamExceptionForm}
+          onClose={() => {
+            setIsDictionaryModalOpen(false);
+            resetTeamExceptionForm();
+          }}
+          editingWord={editingExceptionWord}
+        />
+      )}
     </main>
   );
 }
+
+function TeamDictionaryModal({
+  exceptionWords,
+  wordInput,
+  syllableInput,
+  onWordInputChange,
+  onSyllableInputChange,
+  onAdd,
+  onEdit,
+  onRemove,
+  onCancelEdit,
+  onClose,
+  editingWord,
+}) {
+  const isEditing = Boolean(editingWord);
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') onClose();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/35 px-4 py-6 backdrop-blur-sm" onClick={onClose}>
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="team-dictionary-title"
+        className="w-full max-w-xl rounded-lg border border-gray-200 bg-white shadow-[0_24px_80px_rgba(17,24,39,0.22)]"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-gray-200 px-5 py-4">
+          <div>
+            <h2 id="team-dictionary-title" className="text-base font-black text-gray-950">우리 팀 전용 예외 영단어 사전</h2>
+            <p className="mt-1 text-sm font-medium text-gray-500">등록한 단어는 분석 시 고정 음절 수로 먼저 반영됩니다.</p>
+          </div>
+          <button type="button" aria-label="닫기" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg text-xl font-black leading-none text-gray-400 transition hover:bg-gray-100 hover:text-gray-800">
+            ×
+          </button>
+        </div>
+
+        <div className="p-5">
+          <form
+            className={`grid gap-3 ${isEditing ? 'sm:grid-cols-[minmax(0,1fr)_110px_auto_auto]' : 'sm:grid-cols-[minmax(0,1fr)_110px_auto]'}`}
+            onSubmit={(event) => {
+              event.preventDefault();
+              onAdd();
+            }}
+          >
+            <label className="block">
+              <span className="text-xs font-black text-gray-500">영단어</span>
+              <input
+                type="text"
+                value={wordInput}
+                onChange={(event) => onWordInputChange(event.target.value)}
+                placeholder="예: fire"
+                className="mt-1 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-3 text-sm font-bold text-gray-950 outline-none transition placeholder:text-gray-400 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
+              />
+            </label>
+
+            <label className="block">
+              <span className="text-xs font-black text-gray-500">음절 수</span>
+              <input
+                type="number"
+                min="1"
+                value={syllableInput}
+                onChange={(event) => onSyllableInputChange(event.target.value)}
+                className="mt-1 w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-3 text-sm font-black text-gray-950 outline-none transition focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-100"
+              />
+            </label>
+
+            <button type="submit" className={`mt-5 inline-flex items-center justify-center gap-2 rounded-lg px-4 py-3 text-sm font-black text-white transition sm:mt-[21px] ${isEditing ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-600 hover:bg-blue-700'}`}>
+              {isEditing ? <Edit2 className="h-4 w-4" /> : <Plus className="h-4 w-4" />} {isEditing ? '수정 완료' : '추가'}
+            </button>
+
+            {isEditing && (
+              <button type="button" onClick={onCancelEdit} className="mt-5 inline-flex items-center justify-center rounded-lg border border-gray-200 px-3 py-3 text-sm font-black text-gray-500 transition hover:border-gray-300 hover:bg-gray-50 hover:text-gray-800 sm:mt-[21px]">
+                취소
+              </button>
+            )}
+          </form>
+
+          <div className="mt-5 max-h-72 overflow-y-auto rounded-lg border border-gray-200">
+            {exceptionWords.length === 0 ? (
+              <div className="px-4 py-8 text-center text-sm font-bold text-gray-400">등록된 예외 단어가 없습니다.</div>
+            ) : (
+              <ul className="divide-y divide-gray-100">
+                {exceptionWords.map((entry) => (
+                  <li key={entry.word} className="flex items-center justify-between gap-4 px-4 py-3">
+                    <span className="min-w-0 flex-1 truncate text-sm font-black text-gray-950">{entry.word}</span>
+                    <div className="flex shrink-0 items-center justify-end gap-3">
+                      <span className="text-sm font-bold text-blue-600">{entry.syllables}음절</span>
+                      <button type="button" onClick={() => onEdit(entry)} className="inline-flex h-8 items-center justify-center rounded-lg px-2.5 text-xs font-black text-gray-500 transition hover:bg-blue-50 hover:text-blue-700">
+                        수정
+                      </button>
+                      <button type="button" aria-label={`${entry.word} 삭제`} onClick={() => onRemove(entry.word)} className="flex h-8 w-8 items-center justify-center rounded-lg text-lg font-black leading-none text-red-400 transition hover:bg-red-50 hover:text-red-600">
+                        ×
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+TeamDictionaryModal.propTypes = {
+  exceptionWords: PropTypes.arrayOf(PropTypes.shape({
+    word: PropTypes.string.isRequired,
+    syllables: PropTypes.number.isRequired,
+  })).isRequired,
+  wordInput: PropTypes.string.isRequired,
+  syllableInput: PropTypes.string.isRequired,
+  onWordInputChange: PropTypes.func.isRequired,
+  onSyllableInputChange: PropTypes.func.isRequired,
+  onAdd: PropTypes.func.isRequired,
+  onEdit: PropTypes.func.isRequired,
+  onRemove: PropTypes.func.isRequired,
+  onCancelEdit: PropTypes.func.isRequired,
+  onClose: PropTypes.func.isRequired,
+  editingWord: PropTypes.string,
+};
 
 function Metric({ label, value, tone = 'default' }) {
   const toneClass = { default: 'text-gray-950', danger: 'text-red-600', success: 'text-emerald-700' }[tone];
